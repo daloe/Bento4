@@ -40,7 +40,7 @@
 #define BANNER "MP4 Decrypter - Version 1.4\n"\
                "(Bento4 Version " AP4_VERSION_STRING ")\n"\
                "(c) 2002-2015 Axiomatic Systems, LLC"
- 
+
 /*----------------------------------------------------------------------
 |   PrintUsageAndExit
 +---------------------------------------------------------------------*/
@@ -53,10 +53,12 @@ PrintUsageAndExit()
             "usage: mp4decrypt [options] <input> <output>\n"
             "Options are:\n"
             "  --show-progress : show progress details\n"
-            "  --key <id>:<k>\n"
+            "  --key <id>:<k>:<iv>\n"
             "      <id> is either a track ID in decimal or a 128-bit KID in hex,\n"
             "      <k> is a 128-bit key in hex\n"
             "      (several --key options can be used, one for each track or KID)\n"
+            "      <iv> optional parameter a 64-bit or 128-bit IV or salting key in hex\n"
+            "      (16 or 32 characters) depending on the cipher mode\n"
             "      note: for dcf files, use 1 as the track index\n"
             "      note: for Marlin IPMP/ACGK, use 0 as the track ID\n"
             "      note: KIDs are only applicable to some encryption methods like MPEG-CENC\n"
@@ -95,7 +97,7 @@ main(int argc, char** argv)
 
     // create a key map object to hold keys
     AP4_ProtectionKeyMap key_map;
-    
+
     // parse options
     const char* input_filename = NULL;
     const char* output_filename = NULL;
@@ -112,10 +114,14 @@ main(int argc, char** argv)
             }
             char* keyid_text = NULL;
             char* key_text = NULL;
-            if (AP4_SplitArgs(arg, keyid_text, key_text)) {
-                fprintf(stderr, "ERROR: invalid argument for --key option\n");
-                return 1;
+            char* iv_text = NULL;
+            if (AP4_FAILED(AP4_SplitArgs(arg, keyid_text, key_text, iv_text))) {
+                if (AP4_SplitArgs(arg, keyid_text, key_text)) {
+                    fprintf(stderr, "ERROR: invalid argument for --key option\n");
+                    return 1;
+                }
             }
+
             unsigned char key[16];
             unsigned int  track_id = 0;
             unsigned char kid[16];
@@ -135,11 +141,28 @@ main(int argc, char** argv)
                 fprintf(stderr, "ERROR: invalid hex format for key\n");
                 return 1;
             }
+
+            // parse the iv
+            unsigned char iv[16];
+            unsigned int iv_size = 0;
+            if (iv_text != NULL) {
+                if (AP4_ParseHex(iv_text, iv, iv_size)) {
+                    fprintf(stderr, "ERROR: invalid hex format for iv\n");
+                    return 1;
+                }
+            }
+
             // set the key in the map
             if (track_id) {
-                key_map.SetKey(track_id, key, 16);
+                if (iv_size != 0) {
+                    key_map.SetKey(track_id, key, 16);
+                } else {
+                    key_map.SetKey(track_id, key, 16, iv, iv_size);
+                }
             } else {
-                key_map.SetKeyForKid(kid, key, 16);
+                if (iv_size != 0) {
+                    key_map.SetKeyForKid(kid, key, 16, iv, iv_size);
+                }
             }
         } else if (!strcmp(arg, "--fragments-info")) {
             arg = *++argv;
@@ -215,7 +238,7 @@ main(int argc, char** argv)
         AP4_Movie* movie = input_file->GetMovie();
         if (movie) {
             AP4_List<AP4_Track>& tracks = movie->GetTracks();
-            for (unsigned int i=0; i<tracks.ItemCount(); i++) {
+            for (unsigned int i = 0; i<tracks.ItemCount(); i++) {
                 AP4_Track* track = NULL;
                 tracks.Get(i, track);
                 if (track) {
@@ -236,12 +259,12 @@ main(int argc, char** argv)
             }
         }
     }
-        
+
     // by default, try a standard decrypting processor
     if (processor == NULL) {
         processor = new AP4_StandardDecryptingProcessor(&key_map);
     }
-    
+
     delete input_file;
     input_file = NULL;
     if (fragments_info) {
@@ -249,7 +272,7 @@ main(int argc, char** argv)
     } else {
         input->Seek(0);
     }
-    
+
     // process/decrypt the file
     ProgressListener listener;
     if (fragments_info) {
@@ -257,7 +280,8 @@ main(int argc, char** argv)
     } else {
         result = processor->Process(*input, *output, show_progress?&listener:NULL);
     }
-    if (AP4_FAILED(result)) {
+    if (AP4_FAILED(result))
+    {
         fprintf(stderr, "ERROR: failed to process the file (%d)\n", result);
     }
 
